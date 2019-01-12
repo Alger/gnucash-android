@@ -26,7 +26,6 @@ import android.content.res.TypedArray;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.os.Bundle;
-import android.preference.PreferenceManager;
 import android.support.design.widget.TextInputLayout;
 import android.support.v4.app.Fragment;
 import android.support.v4.app.FragmentManager;
@@ -54,9 +53,10 @@ import android.widget.EditText;
 import android.widget.Spinner;
 
 import org.gnucash.android.R;
-import org.gnucash.android.db.AccountsDbAdapter;
-import org.gnucash.android.db.CommoditiesDbAdapter;
 import org.gnucash.android.db.DatabaseSchema;
+import org.gnucash.android.db.adapter.AccountsDbAdapter;
+import org.gnucash.android.db.adapter.CommoditiesDbAdapter;
+import org.gnucash.android.db.adapter.DatabaseAdapter;
 import org.gnucash.android.model.Account;
 import org.gnucash.android.model.AccountType;
 import org.gnucash.android.model.Commodity;
@@ -65,6 +65,7 @@ import org.gnucash.android.ui.colorpicker.ColorPickerDialog;
 import org.gnucash.android.ui.colorpicker.ColorPickerSwatch;
 import org.gnucash.android.ui.colorpicker.ColorSquare;
 import org.gnucash.android.ui.common.UxArgument;
+import org.gnucash.android.ui.settings.PreferenceActivity;
 import org.gnucash.android.util.CommoditiesCursorAdapter;
 import org.gnucash.android.util.QualifiedAccountNameCursorAdapter;
 
@@ -105,12 +106,6 @@ public class AccountFormFragment extends Fragment {
 	 * Accounts database adapter
 	 */
 	private AccountsDbAdapter mAccountsDbAdapter;
-
-	
-	/**
-	 * List of all currency codes (ISO 4217) supported by the app
-	 */
-	private List<String> mCurrencyCodes;
 
     /**
      * GUID of the parent account
@@ -203,10 +198,7 @@ public class AccountFormFragment extends Fragment {
      */
     private boolean mUseDoubleEntry;
 
-    /**
-     * Default to transparent
-     */
-    private String mSelectedColor = null;
+    private int mSelectedColor = Account.DEFAULT_COLOR;
 
     /**
      * Trigger for color picker dialog
@@ -217,7 +209,7 @@ public class AccountFormFragment extends Fragment {
         @Override
         public void onColorSelected(int color) {
             mColorSquare.setBackgroundColor(color);
-            mSelectedColor = String.format("#%06X", (0xFFFFFF & color));
+            mSelectedColor = color;
         }
     };
 
@@ -246,7 +238,7 @@ public class AccountFormFragment extends Fragment {
 		setHasOptionsMenu(true);
         mAccountsDbAdapter = AccountsDbAdapter.getInstance();
 
-        SharedPreferences sharedPrefs = PreferenceManager.getDefaultSharedPreferences(getActivity());
+        SharedPreferences sharedPrefs = PreferenceActivity.getActiveBookSharedPreferences();
         mUseDoubleEntry = sharedPrefs.getBoolean(getString(R.string.key_use_double_entry), true);
 	}
 	
@@ -384,7 +376,7 @@ public class AccountFormFragment extends Fragment {
             setParentAccountSelection(mAccountsDbAdapter.getID(mParentAccountUID));
         }
 
-        String currencyCode = account.getCurrency().getCurrencyCode();
+        String currencyCode = account.getCommodity().getCurrencyCode();
         setSelectedCurrency(currencyCode);
 
         if (mAccountsDbAdapter.getTransactionMaxSplitNum(mAccount.getUID()) > 1)
@@ -395,9 +387,7 @@ public class AccountFormFragment extends Fragment {
 
         mNameEditText.setText(account.getName());
         mNameEditText.setSelection(mNameEditText.getText().length());
-
-        if (account.getDescription() != null)
-            mDescriptionEditText.setText(account.getDescription());
+        mDescriptionEditText.setText(account.getDescription());
 
         if (mUseDoubleEntry) {
             if (account.getDefaultTransferAccountUID() != null) {
@@ -405,10 +395,9 @@ public class AccountFormFragment extends Fragment {
                 setDefaultTransferAccountSelection(doubleDefaultAccountId, true);
             } else {
                 String currentAccountUID = account.getParentUID();
-                long defaultTransferAccountID = 0;
                 String rootAccountUID = mAccountsDbAdapter.getOrCreateGnuCashRootAccountUID();
                 while (!currentAccountUID.equals(rootAccountUID)) {
-                    defaultTransferAccountID = mAccountsDbAdapter.getDefaultTransferAccountID(mAccountsDbAdapter.getID(currentAccountUID));
+                    long defaultTransferAccountID = mAccountsDbAdapter.getDefaultTransferAccountID(mAccountsDbAdapter.getID(currentAccountUID));
                     if (defaultTransferAccountID > 0) {
                         setDefaultTransferAccountSelection(defaultTransferAccountID, false);
                         break; //we found a parent with default transfer setting
@@ -419,7 +408,7 @@ public class AccountFormFragment extends Fragment {
         }
 
         mPlaceholderCheckBox.setChecked(account.isPlaceholderAccount());
-        initializeColorSquarePreview(account.getColorHexCode());
+        mColorSquare.setBackgroundColor(account.getColor());
 
         setAccountTypeSelection(account.getAccountType());
     }
@@ -440,17 +429,6 @@ public class AccountFormFragment extends Fragment {
             setParentAccountSelection(mAccountsDbAdapter.getID(mParentAccountUID));
         }
 
-    }
-
-    /**
-     * Initializes the preview of the color picker (color square) to the specified color
-     * @param colorHex Color of the format #rgb or #rrggbb
-     */
-    private void initializeColorSquarePreview(String colorHex){
-        if (colorHex != null)
-            mColorSquare.setBackgroundColor(Color.parseColor(colorHex));
-        else
-            mColorSquare.setBackgroundColor(Color.LTGRAY);
     }
 
     /**
@@ -539,7 +517,7 @@ public class AccountFormFragment extends Fragment {
         TypedArray colorTypedArray = res.obtainTypedArray(R.array.account_colors);
         int[] colorOptions = new int[colorTypedArray.length()];
         for (int i = 0; i < colorTypedArray.length(); i++) {
-             int color = colorTypedArray.getColor(i, R.color.title_green);
+             int color = colorTypedArray.getColor(i, getResources().getColor(R.color.title_green));
              colorOptions[i] = color;
         }
         return colorOptions;
@@ -551,10 +529,7 @@ public class AccountFormFragment extends Fragment {
         FragmentManager fragmentManager = getActivity().getSupportFragmentManager();
         int currentColor = Color.LTGRAY;
         if (mAccount != null){
-            String accountColor = mAccount.getColorHexCode();
-            if (accountColor != null){
-                currentColor = Color.parseColor(accountColor);
-            }
+            currentColor = mAccount.getColor();
         }
 
         ColorPickerDialog colorPickerDialogFragment = ColorPickerDialog.newInstance(
@@ -697,7 +672,7 @@ public class AccountFormFragment extends Fragment {
      */
     private List<String> getAccountTypeStringList(){
         String[] accountTypes = Arrays.toString(AccountType.values()).replaceAll("\\[|]", "").split(",");
-        List<String> accountTypesList = new ArrayList<String>();
+        List<String> accountTypesList = new ArrayList<>();
         for (String accountType : accountTypes) {
             accountTypesList.add(accountType.trim());
         }
@@ -709,7 +684,7 @@ public class AccountFormFragment extends Fragment {
      */
     private void loadAccountTypesList(){
         String[] accountTypes = getResources().getStringArray(R.array.account_type_entry_values);
-        ArrayAdapter<String> accountTypesAdapter = new ArrayAdapter<String>(
+        ArrayAdapter<String> accountTypesAdapter = new ArrayAdapter<>(
                 getActivity(), android.R.layout.simple_list_item_1, accountTypes);
 
         accountTypesAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
@@ -750,6 +725,8 @@ public class AccountFormFragment extends Fragment {
      */
 	private void saveAccount() {
         Log.i("AccountFormFragment", "Saving account");
+        if (mAccountsDbAdapter == null)
+            mAccountsDbAdapter = AccountsDbAdapter.getInstance();
         // accounts to update, in case we're updating full names of a sub account tree
         ArrayList<Account> accountsToUpdate = new ArrayList<>();
         boolean nameChanged = false;
@@ -761,6 +738,7 @@ public class AccountFormFragment extends Fragment {
 				return;				
 			}
 			mAccount = new Account(getEnteredName());
+            mAccountsDbAdapter.addRecord(mAccount, DatabaseAdapter.UpdateMethod.insert); //new account, insert it
 		}
 		else {
             nameChanged = !mAccount.getName().equals(getEnteredName());
@@ -776,7 +754,7 @@ public class AccountFormFragment extends Fragment {
 
         mAccount.setDescription(mDescriptionEditText.getText().toString());
         mAccount.setPlaceHolderFlag(mPlaceholderCheckBox.isChecked());
-        mAccount.setColorCode(mSelectedColor);
+        mAccount.setColor(mSelectedColor);
 
         long newParentAccountId;
         String newParentAccountUID;
@@ -819,12 +797,10 @@ public class AccountFormFragment extends Fragment {
                     // parent change, update all full names of descent accounts
                     accountsToUpdate.addAll(mAccountsDbAdapter.getSimpleAccountList(
                             DatabaseSchema.AccountEntry.COLUMN_UID + " IN ('" +
-                                    TextUtils.join("','", mDescendantAccountUIDs) + "')",
-                            null,
-                            null
+                                    TextUtils.join("','", mDescendantAccountUIDs) + "')", null, null
                     ));
                 }
-                HashMap<String, Account> mapAccount = new HashMap<String, Account>();
+                HashMap<String, Account> mapAccount = new HashMap<>();
                 for (Account acct : accountsToUpdate) mapAccount.put(acct.getUID(), acct);
                 for (String uid: mDescendantAccountUIDs) {
                     // mAccountsDbAdapter.getDescendantAccountUIDs() will ensure a parent-child order
@@ -844,12 +820,9 @@ public class AccountFormFragment extends Fragment {
             }
         }
         accountsToUpdate.add(mAccount);
-		if (mAccountsDbAdapter == null)
-			mAccountsDbAdapter = AccountsDbAdapter.getInstance();
+
         // bulk update, will not update transactions
-        mAccountsDbAdapter.enableForeignKey(false);
-		mAccountsDbAdapter.bulkAddRecords(accountsToUpdate);
-        mAccountsDbAdapter.enableForeignKey(true);
+		mAccountsDbAdapter.bulkAddRecords(accountsToUpdate, DatabaseAdapter.UpdateMethod.update);
 
 		finishFragment();
 	}
